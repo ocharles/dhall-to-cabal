@@ -33,7 +33,7 @@ instance ( Semigroup a ) => Semigroup ( ConfigTree cond a ) where
 
 instance ( Monoid a ) => Monoid ( ConfigTree cond a ) where
   mempty = pure mempty
-  mappend = liftM2 mappend
+  mappend = (<>)
 
 
 -- | Given a Dhall expression that is of the form @λ( config : Config ) -> a@,

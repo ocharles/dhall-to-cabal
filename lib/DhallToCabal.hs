@@ -53,6 +53,7 @@ module DhallToCabal
 import Data.List ( partition )
 import Data.Maybe ( fromMaybe )
 import Data.Monoid ( (<>) )
+import Data.Void ( Void )
 
 import qualified Data.Set as Set
 import qualified Data.Text as StrictText
@@ -61,7 +62,6 @@ import qualified Dhall
 import qualified Dhall.Core
 import qualified Dhall.Map as Map
 import qualified Dhall.Parser
-import qualified Dhall.TypeCheck
 import qualified Distribution.Compiler as Cabal
 import qualified Distribution.License as Cabal
 import qualified Distribution.ModuleName as Cabal
@@ -417,7 +417,7 @@ buildInfo = do
   return Cabal.BuildInfo { .. }
 
 
-buildInfoType :: Expr.Expr Dhall.Parser.Src Dhall.TypeCheck.X
+buildInfoType :: Expr.Expr Dhall.Parser.Src Void
 buildInfoType =
   Dhall.expected ( Dhall.record buildInfo )
 
@@ -1299,7 +1299,7 @@ mergeCommonGuards ( a : as ) =
 
 
 
-configRecordType :: Expr.Expr Dhall.Parser.Src Dhall.TypeCheck.X
+configRecordType :: Expr.Expr Dhall.Parser.Src Void
 configRecordType =
   let
     predicate on =
