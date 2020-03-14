@@ -73,7 +73,7 @@ to terminate". In terms of features, we have a language with:
 * An import mechanism to import expressions from foreign sources (local files or
   over HTTP)
 * A type system to type check all of the above
-* [Standards](https://github.com/dhall-lang/dhall-lang/blob/master/standard/semantics.md)
+* [Standards](https://github.com/dhall-lang/dhall-lang/tree/master/standard#semantics)
   to promote adoption in multiple languages.
 
 To give you an example of a Dhall expression, let's jump straight in and see an
