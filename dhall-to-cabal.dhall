@@ -17,9 +17,9 @@ let deps =
       { Cabal =
           majorVersions "Cabal" [ v "3.0" ] [ types.LibraryName.main-library ]
       , Diff =
-          majorVersions "Diff" [ v "0.3.4" ] [ types.LibraryName.main-library ]
+          majorVersions "Diff" [ v "0.3.4", v "0.4.0" ] [ types.LibraryName.main-library ]
       , base =
-          majorVersions "base" [ v "4.10", v "4.11", v "4.12" ] [ types.LibraryName.main-library ]
+          majorVersions "base" [ v "4.11", v "4.12" ] [ types.LibraryName.main-library ]
       , bytestring =
           majorVersions "bytestring" [ v "0.10" ] [ types.LibraryName.main-library ]
       , containers =
@@ -27,7 +27,7 @@ let deps =
       , directory =
           majorVersions "directory" [ v "1.3.0.2" ] [ types.LibraryName.main-library ]
       , dhall =
-          majorVersions "dhall" [ v "1.26.0" ] [ types.LibraryName.main-library ]
+          majorVersions "dhall" [ v "1.26.0", v "1.27.0" ] [ types.LibraryName.main-library ]
       , dhall-to-cabal =
           package "dhall-to-cabal" anyVersion
       , filepath =
@@ -43,7 +43,7 @@ let deps =
           [ v "0.13.2", v "0.14", v "0.15" ]
           [ types.LibraryName.main-library ]
       , prettyprinter =
-          majorVersions "prettyprinter" [ v "1.2.0.1", v "1.3.0" ] [ types.LibraryName.main-library ]
+          majorVersions "prettyprinter" [ v "1.2.0.1", v "1.3.0", v "1.4.0", v "1.5.0" ] [ types.LibraryName.main-library ]
       , contravariant =
           majorVersions "contravariant" [ v "1.4", v "1.5" ] [ types.LibraryName.main-library ]
       , tasty =

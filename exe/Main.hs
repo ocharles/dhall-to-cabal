@@ -363,7 +363,7 @@ printType PrintTypeOptions { .. } = do
       let
         name = fromString ( show t )
       in if shouldBeImported t && not selfContained
-         then Expr.Var ( var "types" ) `Expr.Field` name
+         then Expr.Var ( var "types" ) `Expr.Field` Dhall.makeFieldSelection name
          else Expr.Var ( var name )
 
     bindTypes expr =

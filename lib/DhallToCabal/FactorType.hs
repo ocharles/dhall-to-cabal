@@ -4,6 +4,7 @@
 {-# language OverloadedStrings #-}
 {-# language RecordWildCards #-}
 {-# language ViewPatterns #-}
+{-# language ScopedTypeVariables #-}
 
 module DhallToCabal.FactorType
   ( KnownType(..)
@@ -30,6 +31,8 @@ import qualified Dhall.Core as Dhall
 import qualified Dhall.Core as Expr ( Expr(..), Var(..), Binding(..) )
 import qualified Dhall.Map as Map
 import qualified Dhall.Parser
+
+import qualified Data.Either.Validation as Validation
 
 
 -- Note: this needs to be in topological order of CSEability, from
@@ -83,8 +86,8 @@ isCandidateSubrecord BuildInfo = True
 isCandidateSubrecord _ = False
 
 
-dhallType :: KnownType -> Dhall.Expr Dhall.Parser.Src a
-dhallType t = fmap absurd
+dhallType :: KnownType -> Dhall.Expector ( Dhall.Expr Dhall.Parser.Src a )
+dhallType t = fmap ( fmap absurd )
   ( case t of
       Config -> configRecordType
       Library -> Dhall.expected library
@@ -126,17 +129,16 @@ dhallType t = fmap absurd
 
 
 factored :: KnownType -> Expr.Expr Dhall.Parser.Src KnownType
-factored rootType =
-  sortExpr ( foldl' step ( dhallType rootType ) [ minBound .. maxBound ] )
+factored rootType = case sortExpr <$> foldl' step ( dhallType rootType ) [ minBound .. maxBound ] of
+  Validation.Failure e -> error (show e)
+  Validation.Success a -> a
   where
     step expr factorType =
       fmap
-        ( fromMaybe factorType )
-        ( cse
-          ( isCandidateSubrecord factorType )
-          ( dhallType factorType )
-          expr
-        )
+        ( fmap ( fromMaybe factorType ) )
+        $ cse ( isCandidateSubrecord factorType )
+          <$> dhallType factorType
+          <*> expr
 
 
 -- | No variables should be free in the expression to lift.
@@ -164,7 +166,7 @@ cse subrecord ( fmap Just -> body ) ( fmap Just -> expr ) =
       Expr.Embed Nothing
 
     go e | subrecord, Just extra <- subtractRecordFields e body =
-      Expr.CombineTypes ( Expr.Embed Nothing ) extra
+      Expr.CombineTypes Nothing ( Expr.Embed Nothing ) extra
 
     go e =
       e
@@ -208,7 +210,8 @@ subtractRecordFields a b = do
 -- | Map over the embedded values in the `Expr`, with access to a
 -- function to get the outermost variable with a given name.
 mapWithBindings
-  :: ( ( Text -> Expr.Var ) -> a -> b )
+  :: forall a b s
+  . ( ( Text -> Expr.Var ) -> a -> b )
   -> Expr.Expr s a
   -> Expr.Expr s b
 mapWithBindings f =
@@ -222,14 +225,21 @@ mapWithBindings f =
     shiftName =
       UnorderedMap.alter ( Just . succ . fromMaybe 0 )
 
+    mapRecordFieldExpr f r = r { Dhall.recordFieldValue = f ( Dhall.recordFieldValue r ) }
+
+    mapPreferAnnotationExpr f ( Dhall.PreferFromWith e ) = Dhall.PreferFromWith ( f e )
+    mapPreferAnnotationExpr _ Dhall.PreferFromSource = Dhall.PreferFromSource
+    mapPreferAnnotationExpr _ Dhall.PreferFromCompletion = Dhall.PreferFromCompletion
+
+    go :: UnorderedMap.Map Dhall.Text Int -> Expr.Expr s a -> Expr.Expr s b
     go bindings = \case
-      Expr.Lam n t b ->
-        Expr.Lam n
-          ( go bindings t )
+      Expr.Lam c ( Dhall.FunctionBinding src0 n src1 src2 t ) b ->
+        Expr.Lam c
+          ( Dhall.FunctionBinding src0 n src1 src2 ( go bindings t ) )
           ( go ( shiftName n bindings ) b )
 
-      Expr.Pi n t b ->
-        Expr.Pi n ( go bindings t ) ( go ( shiftName n bindings ) b )
+      Expr.Pi c n t b ->
+        Expr.Pi c n ( go bindings t ) ( go ( shiftName n bindings ) b )
 
       Expr.App f a ->
         Expr.App ( go bindings f ) ( go bindings a )
@@ -266,11 +276,11 @@ mapWithBindings f =
       Expr.ListAppend a b ->
         Expr.ListAppend ( go bindings a ) ( go bindings b )
 
-      Expr.Combine a b ->
-        Expr.Combine ( go bindings a ) ( go bindings b )
+      Expr.Combine c m a b ->
+        Expr.Combine c m ( go bindings a ) ( go bindings b )
 
-      Expr.Prefer a b ->
-        Expr.Prefer ( go bindings a ) ( go bindings b )
+      Expr.Prefer c ann a b ->
+        Expr.Prefer c ( mapPreferAnnotationExpr ( go bindings ) ann ) ( go bindings a ) ( go bindings b )
 
       Expr.TextAppend a b ->
         Expr.TextAppend ( go bindings a ) ( go bindings b )
@@ -287,10 +297,10 @@ mapWithBindings f =
         Expr.None
 
       Expr.Record fields ->
-        Expr.Record ( fmap ( go bindings ) fields )
+        Expr.Record ( fmap ( mapRecordFieldExpr ( go bindings ) ) fields )
 
       Expr.RecordLit fields ->
-        Expr.RecordLit ( fmap ( go bindings ) fields )
+        Expr.RecordLit ( fmap ( mapRecordFieldExpr ( go bindings ) ) fields )
 
       Expr.Union fields ->
         Expr.Union ( fmap ( fmap ( go bindings ) ) fields )
@@ -304,8 +314,8 @@ mapWithBindings f =
       Expr.Note s e ->
         Expr.Note s ( go bindings e )
 
-      Expr.CombineTypes a b ->
-        Expr.CombineTypes ( go bindings a ) ( go bindings b )
+      Expr.CombineTypes c a b ->
+        Expr.CombineTypes c ( go bindings a ) ( go bindings b )
 
       Expr.Project e fs ->
         Expr.Project
@@ -421,12 +431,6 @@ mapWithBindings f =
       Expr.Optional ->
         Expr.Optional
 
-      Expr.OptionalFold ->
-        Expr.OptionalFold
-
-      Expr.OptionalBuild ->
-        Expr.OptionalBuild
-
       Expr.Assert a ->
         Expr.Assert
           ( go bindings a )
@@ -435,3 +439,13 @@ mapWithBindings f =
         Expr.Equivalent
           ( go bindings a )
           ( go bindings b )
+
+      Expr.IntegerClamp -> Expr.IntegerClamp
+
+      Expr.IntegerNegate -> Expr.IntegerNegate
+
+      Expr.TextReplace -> Expr.TextReplace
+      
+      Expr.RecordCompletion a b -> Expr.RecordCompletion ( go bindings a ) ( go bindings b )
+
+      Expr.With x y e -> Expr.With ( go bindings x ) y ( go bindings e )

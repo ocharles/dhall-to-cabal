@@ -6,13 +6,13 @@ module DhallToCabal.Tests
   where
 
 import Data.Maybe ( fromMaybe )
+import Data.Void ( Void )
 import Dhall.Core ( Const(..), Expr(..), Chunks(..) )
 
 import qualified Data.Text as StrictText
 import qualified Dhall
 import qualified Dhall.Core
 import qualified Dhall.Parser
-import qualified Dhall.TypeCheck
 import qualified DhallToCabal
 import qualified Distribution.Text as Cabal ( simpleParse )
 import qualified Test.Tasty
@@ -49,7 +49,7 @@ testExtraction
   :: ( Eq a, Show a )
   => Test.Tasty.TestName
   -> Dhall.Type a
-  -> Dhall.Core.Expr Dhall.Parser.Src Dhall.TypeCheck.X
+  -> Dhall.Core.Expr Dhall.Parser.Src Void
   -> a
   -> Test.Tasty.TestTree
 testExtraction testName t expr expected =

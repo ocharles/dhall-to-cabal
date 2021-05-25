@@ -53,6 +53,7 @@ module DhallToCabal
 import Data.List ( partition )
 import Data.Maybe ( fromMaybe )
 import Data.Monoid ( (<>) )
+import Data.Void ( Void )
 
 import qualified Data.Set as Set
 import qualified Data.Text as StrictText
@@ -61,7 +62,6 @@ import qualified Dhall
 import qualified Dhall.Core
 import qualified Dhall.Map as Map
 import qualified Dhall.Parser
-import qualified Dhall.TypeCheck
 import qualified Distribution.Compiler as Cabal
 import qualified Distribution.License as Cabal
 import qualified Distribution.ModuleName as Cabal
@@ -99,7 +99,7 @@ import DhallToCabal.Diff ( Diffable(..)  )
 
 
 
-packageIdentifier :: Dhall.RecordType Cabal.PackageIdentifier
+packageIdentifier :: Dhall.RecordDecoder Cabal.PackageIdentifier
 packageIdentifier = do
   pkgName <-
     Dhall.field "name" packageName
@@ -111,13 +111,13 @@ packageIdentifier = do
 
 
 
-packageName :: Dhall.Type Cabal.PackageName
+packageName :: Dhall.Decoder Cabal.PackageName
 packageName =
   Cabal.mkPackageName <$> Dhall.string
 
 
 
-packageDescription :: Dhall.RecordType Cabal.PackageDescription
+packageDescription :: Dhall.RecordDecoder Cabal.PackageDescription
 packageDescription = do
   package <-
     packageIdentifier
@@ -229,7 +229,7 @@ packageDescription = do
         = desc
 
 
-version :: Dhall.Type Cabal.Version
+version :: Dhall.Decoder Cabal.Version
 version =
   let
     parse text =
@@ -252,17 +252,20 @@ version =
           Dhall.extractError ( StrictText.pack ( show e ) )
 
     expected =
-      Expr.Pi "Version" ( Expr.Const Expr.Type )
+      (\version -> Expr.Pi Nothing "Version" ( Expr.Const Expr.Type )
         $ Expr.Pi
+            Nothing
             "v"
-            ( Expr.Pi "_" ( Dhall.expected Dhall.string ) "Version" )
+            ( Expr.Pi Nothing "_" version "Version" )
             "Version"
+      )
+      <$> Dhall.expected Dhall.string
 
-  in Dhall.Type { .. }
+  in Dhall.Decoder { .. }
 
 
 
-benchmark :: Dhall.Type Cabal.Benchmark
+benchmark :: Dhall.Decoder Cabal.Benchmark
 benchmark =
   Dhall.record $ do
     mainIs <-
@@ -283,7 +286,7 @@ benchmark =
 
 
 
-buildInfo :: Dhall.RecordType Cabal.BuildInfo
+buildInfo :: Dhall.RecordDecoder Cabal.BuildInfo
 buildInfo = do
   buildable <-
     Dhall.field "buildable" Dhall.bool
@@ -417,12 +420,12 @@ buildInfo = do
   return Cabal.BuildInfo { .. }
 
 
-buildInfoType :: Expr.Expr Dhall.Parser.Src Dhall.TypeCheck.X
+buildInfoType :: Dhall.Expector ( Expr.Expr Dhall.Parser.Src Void )
 buildInfoType =
   Dhall.expected ( Dhall.record buildInfo )
 
 
-testSuite :: Dhall.Type Cabal.TestSuite
+testSuite :: Dhall.Decoder Cabal.TestSuite
 testSuite =
   Dhall.record $ do
     testName <-
@@ -441,7 +444,7 @@ testSuite =
 
 
 
-testSuiteInterface :: Dhall.Type Cabal.TestSuiteInterface
+testSuiteInterface :: Dhall.Decoder Cabal.TestSuiteInterface
 testSuiteInterface = Dhall.union
   ( mconcat
     [ Cabal.TestSuiteExeV10 ( Cabal.mkVersion [ 1, 0 ] )
@@ -455,13 +458,13 @@ testSuiteInterface = Dhall.union
 
 
 
-unqualComponentName :: Dhall.Type Cabal.UnqualComponentName
+unqualComponentName :: Dhall.Decoder Cabal.UnqualComponentName
 unqualComponentName =
   Cabal.mkUnqualComponentName <$> Dhall.string
 
 
 
-executable :: Dhall.Type Cabal.Executable
+executable :: Dhall.Decoder Cabal.Executable
 executable =
   Dhall.record $ do
     exeName <-
@@ -480,7 +483,7 @@ executable =
 
 
 
-foreignLib :: Dhall.Type Cabal.ForeignLib
+foreignLib :: Dhall.Decoder Cabal.ForeignLib
 foreignLib =
   Dhall.record $ do
     foreignLibName <-
@@ -508,7 +511,7 @@ foreignLib =
 
 
 
-foreignLibType :: Dhall.Type Cabal.ForeignLibType
+foreignLibType :: Dhall.Decoder Cabal.ForeignLibType
 foreignLibType = Dhall.union
   ( mconcat
     [ Cabal.ForeignLibNativeShared <$ Dhall.constructor "Shared" Dhall.unit
@@ -518,7 +521,7 @@ foreignLibType = Dhall.union
 
 
 
-library :: Dhall.Type ( Cabal.LibraryName -> Cabal.Library )
+library :: Dhall.Decoder ( Cabal.LibraryName -> Cabal.Library )
 library =
   Dhall.record $ do
     libBuildInfo <-
@@ -543,9 +546,9 @@ library =
 
 
 
-subLibrary :: Dhall.Type ( Cabal.UnqualComponentName, Cabal.CondTree Cabal.ConfVar [ Cabal.Dependency ] Cabal.Library )
+subLibrary :: Dhall.Decoder ( Cabal.UnqualComponentName, Cabal.CondTree Cabal.ConfVar [ Cabal.Dependency ] Cabal.Library )
 subLibrary =
-  Dhall.Type {..}
+  Dhall.Decoder {..}
 
   where
 
@@ -554,27 +557,32 @@ subLibrary =
         name <- Dhall.toMonadic $
           maybe
             ( Dhall.extractError "Missing 'name' field of sub-library." )
-            ( Dhall.extract unqualComponentName )
+            ( Dhall.extract unqualComponentName
+            . Dhall.Core.recordFieldValue
+            )
             ( Map.lookup "name" fields )
         tree <- Dhall.toMonadic $
           maybe
             ( Dhall.extractError "Missing 'library' field of sub-library." )
-            ( Dhall.extract ( guarded ( ($ Cabal.LSubLibName name) <$> library ) ) )
+            ( Dhall.extract ( guarded ( ($ Cabal.LSubLibName name) <$> library ) )
+            . Dhall.Core.recordFieldValue
+            )
             ( Map.lookup "library" fields )
         return ( name, tree )
       e ->
-        Dhall.typeError e expected
+        Dhall.typeError expected e
 
-    expected =
-      Expr.Record
+    expected = fmap Expr.Record
+      ( sequenceA
         ( Map.fromList
-          [ ( "name", Dhall.expected unqualComponentName )
-          , ( "library", Expr.Pi "_" configRecordType ( Dhall.expected library ) )
+          [ ( "name", Dhall.Core.makeRecordField <$> Dhall.expected unqualComponentName )
+          , ( "library", Dhall.Core.makeRecordField <$> ( Expr.Pi Nothing "_" <$> configRecordType <*> Dhall.expected library ) )
           ]
         )
+      )
 
 
-sourceRepo :: Dhall.Type Cabal.SourceRepo
+sourceRepo :: Dhall.Decoder Cabal.SourceRepo
 sourceRepo =
   Dhall.record $ do
     repoKind <-
@@ -602,13 +610,13 @@ sourceRepo =
 
 
 
-repoKind :: Dhall.Type Cabal.RepoKind
+repoKind :: Dhall.Decoder Cabal.RepoKind
 repoKind =
   sortType Dhall.genericAuto
 
 
 
-dependency :: Dhall.Type Cabal.Dependency
+dependency :: Dhall.Decoder Cabal.Dependency
 dependency =
   Dhall.record $ do
     packageName <-
@@ -624,14 +632,14 @@ dependency =
 
 
 
-moduleName :: Dhall.Type Cabal.ModuleName
+moduleName :: Dhall.Decoder Cabal.ModuleName
 moduleName =
-  validateType $
+  validateDecoder $
     Cabal.simpleParse <$> Dhall.string
 
 
 
-libraryName :: Dhall.Type Cabal.LibraryName
+libraryName :: Dhall.Decoder Cabal.LibraryName
 libraryName = Dhall.union
   ( mconcat
     [ Cabal.LMainLibName
@@ -654,12 +662,12 @@ dhallToCabal settings =
 
 
 -- Cabal only parses ASCII characters into a PkgconfigVersion.
-pkgconfigVersion :: Dhall.Type Cabal.PkgconfigVersion
+pkgconfigVersion :: Dhall.Decoder Cabal.PkgconfigVersion
 pkgconfigVersion = Cabal.PkgconfigVersion . StrictText.encodeUtf8 <$> Dhall.strictText
 
 
 
-pkgconfigVersionRange :: Dhall.Type Cabal.PkgconfigVersionRange
+pkgconfigVersionRange :: Dhall.Decoder Cabal.PkgconfigVersionRange
 pkgconfigVersionRange =
   let
     extract e =
@@ -706,7 +714,7 @@ pkgconfigVersionRange =
           Cabal.PcIntersectVersionRanges <$> go a <*> go b
 
         e ->
-          Dhall.typeError e expected
+          Dhall.typeError expected e
 
     expected =
       let
@@ -714,31 +722,42 @@ pkgconfigVersionRange =
           "PkgconfigVersionRange"
 
         versionToVersionRange =
-          Expr.Pi
-            "_"
-            ( Dhall.expected pkgconfigVersion )
-            pkgconfigVersionRange
+          ( \versionRange ->
+            Expr.Pi
+              Nothing
+              "_"
+              versionRange
+              pkgconfigVersionRange
+          )
+          <$> Dhall.expected pkgconfigVersion
 
         combine =
-          Expr.Pi "_" pkgconfigVersionRange ( Expr.Pi "_" pkgconfigVersionRange pkgconfigVersionRange )
+          Expr.Pi
+            Nothing
+            "_"
+            pkgconfigVersionRange
+            ( Expr.Pi Nothing "_" pkgconfigVersionRange pkgconfigVersionRange )
 
       in
-      Expr.Pi "PkgconfigVersionRange" ( Expr.Const Expr.Type )
-        $ Expr.Pi "anyVersion" pkgconfigVersionRange
-        $ Expr.Pi "thisVersion" versionToVersionRange
-        $ Expr.Pi "laterVersion" versionToVersionRange
-        $ Expr.Pi "earlierVersion" versionToVersionRange
-        $ Expr.Pi "orLaterVersion" versionToVersionRange
-        $ Expr.Pi "orEarlierVersion" versionToVersionRange
-        $ Expr.Pi "unionVersionRanges" combine
-        $ Expr.Pi "intersectVersionRanges" combine
-        $ pkgconfigVersionRange
+      Expr.Pi Nothing "PkgconfigVersionRange" ( Expr.Const Expr.Type )
+        . Expr.Pi Nothing "anyVersion" pkgconfigVersionRange
+        <$> ( Expr.Pi Nothing "thisVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "laterVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "earlierVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "orLaterVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "orEarlierVersion" <$> versionToVersionRange
+        <*> pure
+            ( Expr.Pi Nothing "unionVersionRanges" combine
+            $ Expr.Pi Nothing "intersectVersionRanges" combine
+              pkgconfigVersionRange
+            )
+        )))))
 
-  in Dhall.Type { .. }
+  in Dhall.Decoder { .. }
 
 
 
-versionRange :: Dhall.Type Cabal.VersionRange
+versionRange :: Dhall.Decoder Cabal.VersionRange
 versionRange =
   let
     extract e =
@@ -809,7 +828,7 @@ versionRange =
           Cabal.differenceVersionRanges <$> go a <*> go b
 
         e ->
-          Dhall.typeError e expected
+          Dhall.typeError expected e
 
     expected =
       let
@@ -817,45 +836,52 @@ versionRange =
           "VersionRange"
 
         versionToVersionRange =
+          ( \v ->
           Expr.Pi
+            Nothing
             "_"
-            ( Dhall.expected version )
+            v
             versionRange
+          )
+          <$> Dhall.expected version
 
         combine =
-          Expr.Pi "_" versionRange ( Expr.Pi "_" versionRange versionRange )
+          Expr.Pi Nothing "_" versionRange ( Expr.Pi Nothing "_" versionRange versionRange )
 
       in
-      Expr.Pi "VersionRange" ( Expr.Const Expr.Type )
-        $ Expr.Pi "anyVersion" versionRange
-        $ Expr.Pi "noVersion" versionRange
-        $ Expr.Pi "thisVersion" versionToVersionRange
-        $ Expr.Pi "notThisVersion" versionToVersionRange
-        $ Expr.Pi "laterVersion" versionToVersionRange
-        $ Expr.Pi "earlierVersion" versionToVersionRange
-        $ Expr.Pi "orLaterVersion" versionToVersionRange
-        $ Expr.Pi "orEarlierVersion" versionToVersionRange
-        $ Expr.Pi "withinVersion" versionToVersionRange
-        $ Expr.Pi "majorBoundVersion" versionToVersionRange
-        $ Expr.Pi "unionVersionRanges" combine
-        $ Expr.Pi "intersectVersionRanges" combine
-        $ Expr.Pi "differenceVersionRanges" combine
-        $ Expr.Pi
-            "invertVersionRange"
-            ( Expr.Pi "_" versionRange versionRange )
-            versionRange
+      Expr.Pi Nothing "VersionRange" ( Expr.Const Expr.Type )
+        . Expr.Pi Nothing "anyVersion" versionRange
+        . Expr.Pi Nothing "noVersion" versionRange
+        <$> ( Expr.Pi Nothing "thisVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "notThisVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "laterVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "earlierVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "orLaterVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "orEarlierVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "withinVersion" <$> versionToVersionRange
+        <*> ( Expr.Pi Nothing "majorBoundVersion" <$> versionToVersionRange
+        <*> pure
+            ( Expr.Pi Nothing "unionVersionRanges" combine
+            $ Expr.Pi Nothing "intersectVersionRanges" combine
+            $ Expr.Pi Nothing "differenceVersionRanges" combine
+            $ Expr.Pi
+                Nothing
+                "invertVersionRange"
+                ( Expr.Pi Nothing "_" versionRange versionRange )
+                versionRange
+            )))))))))
 
-  in Dhall.Type { .. }
+  in Dhall.Decoder { .. }
 
 
 
-buildType :: Dhall.Type Cabal.BuildType
+buildType :: Dhall.Decoder Cabal.BuildType
 buildType =
   sortType Dhall.genericAuto
 
 
 
-license :: Dhall.Type (Either SPDX.License Cabal.License)
+license :: Dhall.Decoder (Either SPDX.License Cabal.License)
 license = Dhall.union
   ( mconcat
     [ Right . Cabal.GPL <$> Dhall.constructor "GPL" ( Dhall.maybe version )
@@ -878,7 +904,7 @@ license = Dhall.union
   )
 
 
-spdxLicense :: Dhall.Type SPDX.LicenseExpression
+spdxLicense :: Dhall.Decoder SPDX.LicenseExpression
 spdxLicense =
   let
     extract e =
@@ -926,57 +952,72 @@ spdxLicense =
           SPDX.EOr <$> go a <*> go b
 
         e ->
-          Dhall.typeError e expected
+          Dhall.typeError expected e
 
     expected =
       let
         licenseType =
           "SPDX"
 
-        licenseIdAndException
-          = Expr.Pi "id" ( Dhall.expected spdxLicenseId )
-          $ Expr.Pi "exception" ( Dhall.expected ( Dhall.maybe spdxLicenseExceptionId ) )
-          $ licenseType
+        licenseIdAndException =
+          (\ id exception ->
+              Expr.Pi Nothing "id" id
+            $ Expr.Pi Nothing "exception" exception
+              licenseType
+          )
+          <$> Dhall.expected spdxLicenseId
+          <*> Dhall.expected ( Dhall.maybe spdxLicenseExceptionId )
 
-        licenseRef
-          = Expr.Pi "ref" ( Dhall.expected Dhall.string )
-          $ Expr.Pi "exception" ( Dhall.expected ( Dhall.maybe spdxLicenseExceptionId ) )
-          $ licenseType
+        licenseRef =
+          (\ ref exception ->
+              Expr.Pi Nothing "ref" ref
+            $ Expr.Pi Nothing "exception" exception
+              licenseType
+          )
+          <$> Dhall.expected Dhall.string
+          <*> Dhall.expected ( Dhall.maybe spdxLicenseExceptionId )
 
-        licenseRefWithFile
-          = Expr.Pi "ref" ( Dhall.expected Dhall.string )
-          $ Expr.Pi "file" ( Dhall.expected Dhall.string )
-          $ Expr.Pi "exception" ( Dhall.expected ( Dhall.maybe spdxLicenseExceptionId ) )
-          $ licenseType
+        licenseRefWithFile =
+          (\ ref file exception ->
+              Expr.Pi Nothing "ref" ref
+            $ Expr.Pi Nothing "file" file
+            $ Expr.Pi Nothing "exception" exception
+              licenseType
+          )
+          <$> Dhall.expected Dhall.string
+          <*> Dhall.expected Dhall.string
+          <*> Dhall.expected ( Dhall.maybe spdxLicenseExceptionId )
 
         combine =
-          Expr.Pi "_" licenseType ( Expr.Pi "_" licenseType licenseType )
+          Expr.Pi Nothing "_" licenseType ( Expr.Pi Nothing "_" licenseType licenseType )
 
       in
-      Expr.Pi "SPDX" ( Expr.Const Expr.Type )
-        $ Expr.Pi "license" licenseIdAndException
-        $ Expr.Pi "licenseVersionOrLater" licenseIdAndException
-        $ Expr.Pi "ref" licenseRef
-        $ Expr.Pi "refWithFile" licenseRefWithFile
-        $ Expr.Pi "and" combine
-        $ Expr.Pi "or" combine
-        $ licenseType
+      Expr.Pi Nothing "SPDX" ( Expr.Const Expr.Type )
+        <$> ( Expr.Pi Nothing "license" <$> licenseIdAndException
+        <*> ( Expr.Pi Nothing "licenseVersionOrLater" <$> licenseIdAndException
+        <*> ( Expr.Pi Nothing "ref" <$> licenseRef
+        <*> ( Expr.Pi Nothing "refWithFile" <$> licenseRefWithFile
+        <*> pure
+          ( Expr.Pi Nothing "and" combine
+          $ Expr.Pi Nothing "or" combine
+            licenseType
+          )))))
 
-  in Dhall.Type { .. }
+  in Dhall.Decoder { .. }
 
 
 
-spdxLicenseId :: Dhall.Type SPDX.LicenseId
+spdxLicenseId :: Dhall.Decoder SPDX.LicenseId
 spdxLicenseId = Dhall.genericAuto
 
 
 
-spdxLicenseExceptionId :: Dhall.Type SPDX.LicenseExceptionId
+spdxLicenseExceptionId :: Dhall.Decoder SPDX.LicenseExceptionId
 spdxLicenseExceptionId = Dhall.genericAuto
 
 
 
-compiler :: Dhall.Type ( Cabal.CompilerFlavor, Cabal.VersionRange )
+compiler :: Dhall.Decoder ( Cabal.CompilerFlavor, Cabal.VersionRange )
 compiler =
   Dhall.record $
     (,)
@@ -985,19 +1026,19 @@ compiler =
 
 
 
-compilerFlavor :: Dhall.Type Cabal.CompilerFlavor
+compilerFlavor :: Dhall.Decoder Cabal.CompilerFlavor
 compilerFlavor =
   sortType Dhall.genericAuto
 
 
 
-repoType :: Dhall.Type Cabal.RepoType
+repoType :: Dhall.Decoder Cabal.RepoType
 repoType =
   sortType Dhall.genericAuto
 
 
 
-legacyExeDependency :: Dhall.Type Cabal.LegacyExeDependency
+legacyExeDependency :: Dhall.Decoder Cabal.LegacyExeDependency
 legacyExeDependency =
   Dhall.record $ do
     exe <-
@@ -1010,7 +1051,7 @@ legacyExeDependency =
 
 
 
-compilerOptions :: Dhall.Type ( Cabal.PerCompilerFlavor [ String ] )
+compilerOptions :: Dhall.Decoder ( Cabal.PerCompilerFlavor [ String ] )
 compilerOptions =
   Dhall.record $
     Cabal.PerCompilerFlavor
@@ -1024,7 +1065,7 @@ compilerOptions =
 
 
 
-exeDependency :: Dhall.Type Cabal.ExeDependency
+exeDependency :: Dhall.Decoder Cabal.ExeDependency
 exeDependency =
   Dhall.record $ do
     packageName <-
@@ -1040,13 +1081,13 @@ exeDependency =
 
 
 
-language :: Dhall.Type Cabal.Language
+language :: Dhall.Decoder Cabal.Language
 language =
   sortType Dhall.genericAuto
 
 
 
-pkgconfigDependency :: Dhall.Type Cabal.PkgconfigDependency
+pkgconfigDependency :: Dhall.Decoder Cabal.PkgconfigDependency
 pkgconfigDependency =
   Dhall.record $ do
     name <-
@@ -1063,13 +1104,13 @@ pkgconfigDependency =
 
 
 
-pkgconfigName :: Dhall.Type Cabal.PkgconfigName
+pkgconfigName :: Dhall.Decoder Cabal.PkgconfigName
 pkgconfigName =
   Cabal.mkPkgconfigName <$> Dhall.string
 
 
 
-executableScope :: Dhall.Type Cabal.ExecutableScope
+executableScope :: Dhall.Decoder Cabal.ExecutableScope
 executableScope = Dhall.union
   ( mconcat
     [ Cabal.ExecutablePublic <$ Dhall.constructor "Public" Dhall.unit
@@ -1079,7 +1120,7 @@ executableScope = Dhall.union
 
 
 
-moduleReexport :: Dhall.Type Cabal.ModuleReexport
+moduleReexport :: Dhall.Decoder Cabal.ModuleReexport
 moduleReexport =
   Dhall.record $ do
     original <-
@@ -1104,12 +1145,12 @@ moduleReexport =
         }
 
 
-foreignLibOption :: Dhall.Type Cabal.ForeignLibOption
+foreignLibOption :: Dhall.Decoder Cabal.ForeignLibOption
 foreignLibOption = Dhall.union $
   Cabal.ForeignLibStandalone <$ Dhall.constructor "Standalone" Dhall.unit
 
 
-versionInfo :: Dhall.Type Cabal.LibVersionInfo
+versionInfo :: Dhall.Decoder Cabal.LibVersionInfo
 versionInfo =
   Dhall.record $
   fmap Cabal.mkLibVersionInfo $
@@ -1120,7 +1161,7 @@ versionInfo =
 
 
 
-extension :: Dhall.Type Cabal.Extension
+extension :: Dhall.Decoder Cabal.Extension
 extension =
   let
     extName :: Cabal.KnownExtension -> StrictText.Text
@@ -1131,7 +1172,7 @@ extension =
       then Cabal.EnableExtension ext
       else Cabal.DisableExtension ext
 
-    constr :: Cabal.KnownExtension -> Dhall.UnionType Cabal.Extension
+    constr :: Cabal.KnownExtension -> Dhall.UnionDecoder Cabal.Extension
     constr ext = Dhall.constructor
       ( extName ext )
       ( enableDisable ext <$> Dhall.bool )
@@ -1142,19 +1183,19 @@ extension =
 
 guarded
   :: ( Monoid a, Eq a, Diffable a )
-  => Dhall.Type a
-  -> Dhall.Type ( Cabal.CondTree Cabal.ConfVar [Cabal.Dependency] a )
+  => Dhall.Decoder a
+  -> Dhall.Decoder ( Cabal.CondTree Cabal.ConfVar [Cabal.Dependency] a )
 guarded t =
   let
     extractConfVar body =
       case body of
-        Expr.App ( Expr.App ( Expr.Field "config" "impl" ) compiler ) version ->
+        Expr.App ( Expr.App ( Expr.Field "config" ( Dhall.Core.FieldSelection _ "impl" _ ) ) compiler ) version ->
           Cabal.Impl
             <$> Dhall.extract compilerFlavor compiler
             <*> Dhall.extract versionRange version
 
         Expr.App ( Expr.Field "config" field ) x ->
-          case field of
+          case Dhall.Core.fieldSelectionLabel field of
             "os" ->
               Cabal.OS <$> Dhall.extract operatingSystem x
 
@@ -1230,9 +1271,9 @@ guarded t =
             )
 
     expected =
-        Expr.Pi "_" configRecordType ( Dhall.expected t )
+        Expr.Pi Nothing "_" <$> configRecordType <*> Dhall.expected t
 
-  in Dhall.Type { .. }
+  in Dhall.Decoder { .. }
 
 
 
@@ -1299,30 +1340,34 @@ mergeCommonGuards ( a : as ) =
 
 
 
-configRecordType :: Expr.Expr Dhall.Parser.Src Dhall.TypeCheck.X
+configRecordType :: Dhall.Expector ( Expr.Expr Dhall.Parser.Src Void )
 configRecordType =
   let
-    predicate on =
-      Expr.Pi "_" on Expr.Bool
+    predicate on = Dhall.Core.makeRecordField
+      $ Expr.Pi Nothing "_" on Expr.Bool
 
   in
     Expr.Record
-      ( Map.fromList
-          [ ( "os", predicate ( Dhall.expected operatingSystem ) )
-          , ( "arch", predicate ( Dhall.expected arch ) )
-          , ( "flag", predicate ( Dhall.expected flagName ) )
-          , ( "impl"
-            , Expr.Pi
-                "_"
-                ( Dhall.expected compilerFlavor )
-                ( Expr.Pi "_" ( Dhall.expected versionRange ) Expr.Bool )
-            )
-          ]
-      )
+      <$> sequenceA
+        ( Map.fromList
+            [ ( "os", predicate <$> Dhall.expected operatingSystem )
+            , ( "arch", predicate <$> Dhall.expected arch )
+            , ( "flag", predicate <$> Dhall.expected flagName )
+            , ( "impl"
+              , Dhall.Core.makeRecordField <$>
+                  ( Expr.Pi
+                    Nothing
+                    "_"
+                    <$> Dhall.expected compilerFlavor
+                    <*> ( Expr.Pi Nothing "_" <$> Dhall.expected versionRange <*> pure Expr.Bool )
+                  )
+              )
+            ]
+        )
 
 
 
-genericPackageDescription :: Dhall.Type Cabal.GenericPackageDescription
+genericPackageDescription :: Dhall.Decoder Cabal.GenericPackageDescription
 genericPackageDescription =
   let
     namedList k t =
@@ -1364,19 +1409,19 @@ genericPackageDescription =
 
 
 
-operatingSystem :: Dhall.Type Cabal.OS
+operatingSystem :: Dhall.Decoder Cabal.OS
 operatingSystem =
   sortType Dhall.genericAuto
 
 
 
-arch :: Dhall.Type Cabal.Arch
+arch :: Dhall.Decoder Cabal.Arch
 arch =
   sortType Dhall.genericAuto
 
 
 
-flag :: Dhall.Type Cabal.Flag
+flag :: Dhall.Decoder Cabal.Flag
 flag =
   Dhall.record $ do
     flagName <-
@@ -1395,13 +1440,13 @@ flag =
 
 
 
-flagName :: Dhall.Type Cabal.FlagName
+flagName :: Dhall.Decoder Cabal.FlagName
 flagName =
   Cabal.mkFlagName <$> Dhall.string
 
 
 
-setupBuildInfo :: Dhall.Type Cabal.SetupBuildInfo
+setupBuildInfo :: Dhall.Decoder Cabal.SetupBuildInfo
 setupBuildInfo =
   Dhall.record $ do
     setupDepends <-
@@ -1414,13 +1459,13 @@ setupBuildInfo =
 
 
 
-filePath :: Dhall.Type FilePath
+filePath :: Dhall.Decoder FilePath
 filePath =
   Dhall.string
 
 
 
-mixin :: Dhall.Type Cabal.Mixin
+mixin :: Dhall.Decoder Cabal.Mixin
 mixin =
   Dhall.record $ do
     mixinPackageName <-
@@ -1433,7 +1478,7 @@ mixin =
 
 
 
-includeRenaming :: Dhall.Type Cabal.IncludeRenaming
+includeRenaming :: Dhall.Decoder Cabal.IncludeRenaming
 includeRenaming =
   Dhall.record $ do
     includeProvidesRn <-
@@ -1446,7 +1491,7 @@ includeRenaming =
 
 
 
-moduleRenaming :: Dhall.Type Cabal.ModuleRenaming
+moduleRenaming :: Dhall.Decoder Cabal.ModuleRenaming
 moduleRenaming = Dhall.union
   ( mconcat
     [ Cabal.ModuleRenaming
@@ -1464,7 +1509,7 @@ moduleRenaming = Dhall.union
   )
 
 
-libraryVisibility :: Dhall.Type Cabal.LibraryVisibility
+libraryVisibility :: Dhall.Decoder Cabal.LibraryVisibility
 libraryVisibility = Dhall.union
   ( mconcat
     [ Cabal.LibraryVisibilityPublic <$ Dhall.constructor "public" Dhall.unit
@@ -1473,6 +1518,6 @@ libraryVisibility = Dhall.union
   )
 
 
-sortType :: Dhall.Type a -> Dhall.Type a
+sortType :: Dhall.Decoder a -> Dhall.Decoder a
 sortType t =
-  t { Dhall.expected = sortExpr ( Dhall.expected t ) }
+  t { Dhall.expected = sortExpr <$> Dhall.expected t }

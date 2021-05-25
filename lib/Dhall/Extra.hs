@@ -6,7 +6,7 @@
 {-# language RecordWildCards #-}
 
 module Dhall.Extra
-  ( validateType
+  ( validateDecoder
   , sortExpr
   )
   where
@@ -17,8 +17,8 @@ import qualified Dhall.Core as Expr ( Expr(..) )
 import qualified Dhall.Map as Map
 
 
-validateType :: Dhall.Type ( Maybe a ) -> Dhall.Type a
-validateType a =
+validateDecoder :: Dhall.Decoder ( Maybe a ) -> Dhall.Decoder a
+validateDecoder a =
   a { Dhall.extract =
         \expr ->
           case Dhall.toMonadic (Dhall.extract a expr) of

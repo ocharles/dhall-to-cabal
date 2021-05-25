@@ -18,7 +18,7 @@ module CabalToDhall
 import Data.Foldable ( foldMap, toList )
 import Data.Functor.Contravariant ( (>$<), Contravariant( contramap ) )
 import Data.Semigroup ( Semigroup, (<>) )
-import Data.Void ( absurd )
+import Data.Void ( Void, absurd )
 import Numeric.Natural ( Natural )
 
 import qualified Data.ByteString as ByteString
@@ -30,7 +30,6 @@ import qualified Dhall.Core
 import qualified Dhall.Core as Expr ( Expr(..), Var(..), Chunks(..), makeBinding )
 import qualified Dhall.Map as Map
 import qualified Dhall.Parser
-import qualified Dhall.TypeCheck
 import qualified Distribution.Compiler as Cabal
 import qualified Distribution.License as Cabal
 import qualified Distribution.ModuleName as Cabal
@@ -139,17 +138,17 @@ data PreludeReference
 resolvePreludeVar :: PreludeReference -> Expr.Expr s a
 resolvePreludeVar = \case
   PreludeDefault typ ->
-    Expr.Var "prelude" `Expr.Field` "defaults" `Expr.Field` StrictText.pack ( show typ )
+    Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "defaults" `Expr.Field` Dhall.Core.makeFieldSelection ( StrictText.pack ( show typ ) )
   PreludeV ->
-    Expr.Var "prelude" `Expr.Field` "v"
+    Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "v"
   PreludeConstructorsLicense ->
-    Expr.Var "types" `Expr.Field` "License"
+    Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "License"
   PreludeConstructorsRepoKind ->
-    Expr.Var "types" `Expr.Field` "RepoKind"
+    Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoKind"
   PreludeConstructorsScope ->
-    Expr.Var "types" `Expr.Field` "Scope"
+    Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Scope"
   PreludeConstructorsLibraryVisibility ->
-    Expr.Var "types" `Expr.Field` "LibraryVisibility"
+    Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryVisibility"
 
 
 type Default s a
@@ -173,20 +172,22 @@ getDefault typesLoc resolve typ = withTypesImport expr
         shared = Map.filter id ( Map.intersectionWith (==) fields ( buildInfoDefault resolve ) )
       in
         if | null shared
-             -> Expr.RecordLit fields
+             -> Expr.RecordLit (fmap Dhall.Core.makeRecordField fields)
            | null ( Map.difference fields shared )
              -> resolve ( PreludeDefault BuildInfo )
            | otherwise
              -> Expr.Prefer
+                  Nothing
+                  Dhall.Core.PreferFromCompletion
                   ( resolve ( PreludeDefault BuildInfo ) )
-                  ( Expr.RecordLit ( Map.difference fields shared ) )
+                  ( Expr.RecordLit ( fmap Dhall.Core.makeRecordField ( Map.difference fields shared ) ) )
 
     expr =
       case typ of
         CompilerOptions ->
-          Expr.RecordLit ( compilerOptionsDefault resolve )
+          Expr.RecordLit ( Dhall.Core.makeRecordField <$> compilerOptionsDefault resolve )
         BuildInfo ->
-          Expr.RecordLit ( buildInfoDefault resolve )
+          Expr.RecordLit ( Dhall.Core.makeRecordField <$> buildInfoDefault resolve )
         MainLibrary ->
           factorBuildInfo ( libraryDefault False resolve )
         NamedLibrary ->
@@ -198,9 +199,9 @@ getDefault typesLoc resolve typ = withTypesImport expr
         TestSuite ->
           factorBuildInfo ( testSuiteDefault resolve )
         Package ->
-          Expr.RecordLit ( packageDefault resolve )
+          Expr.RecordLit ( Dhall.Core.makeRecordField <$> packageDefault resolve )
         SourceRepo ->
-          Expr.RecordLit ( sourceRepoDefault resolve )
+          Expr.RecordLit ( Dhall.Core.makeRecordField <$> sourceRepoDefault resolve )
 
 
 emptyListDefault
@@ -291,16 +292,16 @@ buildInfoDefault resolve = fields
       ]
 
 
-libraryVisibility :: Dhall.InputType Cabal.LibraryVisibility
+libraryVisibility :: Dhall.Encoder Cabal.LibraryVisibility
 libraryVisibility =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.LibraryVisibilityPublic ->
-            Expr.Var "types" `Expr.Field` "LibraryVisibility" `Expr.Field` "public"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryVisibility" `Expr.Field` Dhall.Core.makeFieldSelection "public"
         Cabal.LibraryVisibilityPrivate ->
-            Expr.Var "types" `Expr.Field` "LibraryVisibility" `Expr.Field` "private"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryVisibility" `Expr.Field` Dhall.Core.makeFieldSelection "private"
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "LibraryVisibility"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryVisibility"
     }
 
 
@@ -318,8 +319,8 @@ libraryDefault named resolve = buildInfoDefault resolve <> specificFields
         )
       ]
     visibility = if named
-      then "private"
-      else "public"
+      then Dhall.Core.makeFieldSelection "private"
+      else Dhall.Core.makeFieldSelection "public"
 
 
 benchmarkDefault :: Default s a
@@ -335,21 +336,23 @@ executableDefault resolve = buildInfoDefault resolve <> specificFields
   where
     specificFields =
       Map.singleton "scope"
-        ( resolve PreludeConstructorsScope `Expr.Field` "Public" )
+        ( resolve PreludeConstructorsScope `Expr.Field` Dhall.Core.makeFieldSelection "Public" )
 
 
 packageDefault :: Default s a
 packageDefault resolve = fields
   where
     named name typ = Expr.Record
-      ( Map.fromList
+      ( Dhall.Core.makeRecordField
+        <$> Map.fromList
           [ ( "name"
             , Expr.Text
             )
           , ( name
             , Expr.Pi
+                Nothing
                 "config"
-                ( Expr.Var "types" `Expr.Field` "Config" )
+                ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Config" )
                 ( generaliseDeclared typ )
             )
           ]
@@ -380,12 +383,13 @@ packageDefault resolve = fields
       , textFieldDefault "homepage" ""
       , emptyOptionalDefault "library"
           ( Expr.Pi
+              Nothing
               "config"
-              ( Expr.Var "types" `Expr.Field` "Config" )
+              ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Config" )
               ( generaliseDeclared ( library False ) )
           )
       , ( "license"
-        , resolve PreludeConstructorsLicense `Expr.Field` "AllRightsReserved"
+        , resolve PreludeConstructorsLicense `Expr.Field` Dhall.Core.makeFieldSelection "AllRightsReserved"
         )
       , emptyListDefault "license-files" Expr.Text
       , textFieldDefault "maintainer" ""
@@ -397,17 +401,19 @@ packageDefault resolve = fields
       , emptyListDefault "test-suites" ( named "test-suite" testSuite )
       , emptyListDefault "tested-with"
           ( Expr.Record
-              ( Map.fromList
-                  [ ( "compiler", generaliseDeclared compilerFlavor )
-                  , ( "version", generaliseDeclared versionRange )
-                  ]
-              )
+            ( Dhall.Core.makeRecordField
+              <$> Map.fromList
+                [ ( "compiler", generaliseDeclared compilerFlavor )
+                , ( "version", generaliseDeclared versionRange )
+                ]
+            )
           )
       , emptyListDefault "x-fields"
           ( Expr.Record
-              ( Map.fromList
-                  [ ( "_1", Expr.Text ), ( "_2", Expr.Text ) ]
-              )
+            ( Dhall.Core.makeRecordField
+              <$> Map.fromList
+                [ ( "_1", Expr.Text ), ( "_2", Expr.Text ) ]
+            )
           )
       , emptyOptionalDefault "custom-setup"
           ( generaliseDeclared setupBuildInfo )
@@ -425,7 +431,7 @@ sourceRepoDefault resolve = fields
       , emptyOptionalDefault "tag" Expr.Text
       , emptyOptionalDefault "subdir" Expr.Text
       , ( "kind"
-        , resolve PreludeConstructorsRepoKind `Expr.Field` "RepoHead"
+        , resolve PreludeConstructorsRepoKind `Expr.Field` Dhall.Core.makeFieldSelection "RepoHead"
         )
       ]
 
@@ -469,14 +475,16 @@ compareToDefault _ expr =
 withDefault :: ( Eq a ) => KnownDefault -> Default s a -> Expr.Expr s a -> Expr.Expr s a
 withDefault typ defs ( Expr.RecordLit fields ) =
   let
-    nonDefaults = nonDefaultFields ( defs resolvePreludeVar ) fields
+    nonDefaults = nonDefaultFields ( defs resolvePreludeVar ) ( Dhall.Core.recordFieldValue <$> fields )
     name = StrictText.pack ( show typ )
   in
     if null nonDefaults
-    then Expr.Var ( Expr.V "prelude" 0 ) `Expr.Field` "defaults" `Expr.Field` name
+    then Expr.Var ( Expr.V "prelude" 0 ) `Expr.Field` Dhall.Core.makeFieldSelection "defaults" `Expr.Field` Dhall.Core.makeFieldSelection name
     else Expr.Prefer
-           ( Expr.Var ( Expr.V "prelude" 0 ) `Expr.Field` "defaults" `Expr.Field` name )
-           ( Expr.RecordLit nonDefaults )
+           Nothing
+           Dhall.Core.PreferFromCompletion
+           ( Expr.Var ( Expr.V "prelude" 0 ) `Expr.Field` Dhall.Core.makeFieldSelection "defaults" `Expr.Field` Dhall.Core.makeFieldSelection name )
+           ( Expr.RecordLit ( Dhall.Core.makeRecordField <$> nonDefaults ) )
 withDefault _ _ expr =
   expr
 
@@ -484,7 +492,7 @@ withDefault _ _ expr =
 newtype RecordInputType a =
   RecordInputType
     { _unRecordInputType ::
-        Map.Map Dhall.Text ( Dhall.InputType a )
+        Map.Map Dhall.Text ( Dhall.Encoder a )
     }
   deriving ( Semigroup, Monoid )
 
@@ -494,30 +502,30 @@ instance Contravariant RecordInputType where
     RecordInputType ( fmap ( contramap f ) map )
 
 
-recordField :: Dhall.Text -> Dhall.InputType a -> RecordInputType a
+recordField :: Dhall.Text -> Dhall.Encoder a -> RecordInputType a
 recordField k v =
   RecordInputType ( Map.singleton k v )
 
 
-runRecordInputType :: RecordInputType a -> Dhall.InputType a
+runRecordInputType :: RecordInputType a -> Dhall.Encoder a
 runRecordInputType ( RecordInputType m ) =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
-        \a -> sortExpr ( Expr.RecordLit ( fmap ( \t -> Dhall.embed t a ) m ) )
-    , Dhall.declared = sortExpr ( Expr.Record ( fmap Dhall.declared m ) )
+        \a -> sortExpr ( Expr.RecordLit ( fmap ( \t -> Dhall.Core.makeRecordField ( Dhall.embed t a ) ) m ) )
+    , Dhall.declared = sortExpr ( Expr.Record ( fmap ( Dhall.Core.makeRecordField . Dhall.declared ) m ) )
     }
 
 
-runRecordInputTypeWithDefault :: KnownDefault -> Default Dhall.Parser.Src Dhall.TypeCheck.X -> RecordInputType a -> Dhall.InputType a
+runRecordInputTypeWithDefault :: KnownDefault -> Default Dhall.Parser.Src Void -> RecordInputType a -> Dhall.Encoder a
 runRecordInputTypeWithDefault typ def m =
   let
-    Dhall.InputType embed declared = runRecordInputType m
+    Dhall.Encoder embed declared = runRecordInputType m
   in
-    Dhall.InputType ( withDefault typ def . embed ) declared
+    Dhall.Encoder ( withDefault typ def . embed ) declared
 
 
 genericPackageDescriptionToDhall
-  :: Dhall.InputType Cabal.GenericPackageDescription
+  :: Dhall.Encoder Cabal.GenericPackageDescription
 genericPackageDescriptionToDhall =
   let
     named k v =
@@ -597,31 +605,31 @@ packageIdentifierToRecord =
     ]
 
 
-packageNameToDhall :: Dhall.InputType Cabal.PackageName
+packageNameToDhall :: Dhall.Encoder Cabal.PackageName
 packageNameToDhall =
   contramap Cabal.unPackageName stringToDhall
 
 
-versionToDhall :: Dhall.InputType Cabal.Version
+versionToDhall :: Dhall.Encoder Cabal.Version
 versionToDhall =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
-        Expr.App ( Expr.Var "prelude" `Expr.Field` "v" )
+        Expr.App ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "v" )
           . Dhall.embed stringToDhall
           . show
           . Cabal.pretty
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Version"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Version"
     }
 
 
-stringToDhall :: Dhall.InputType String
+stringToDhall :: Dhall.Encoder String
 stringToDhall =
   contramap StrictText.pack Dhall.inject
 
-licenseToDhall :: Dhall.InputType (Either SPDX.License Cabal.License)
+licenseToDhall :: Dhall.Encoder (Either SPDX.License Cabal.License)
 licenseToDhall =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \l ->
         case l of
           Right ( Cabal.GPL v ) ->
@@ -663,32 +671,34 @@ licenseToDhall =
           Left ( SPDX.License x ) ->
             license "SPDX" ( Dhall.embed spdxLicenseExpressionToDhall x )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "License"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "License"
     }
   where
     license name =
       Expr.App
-        ( Expr.Var "types" `Expr.Field` "License" `Expr.Field` name )
+        ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "License"
+                           `Expr.Field` Dhall.Core.makeFieldSelection name )
     licenseNullary name =
-      Expr.Var "types" `Expr.Field` "License" `Expr.Field` name
+      Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "License"
+                       `Expr.Field` Dhall.Core.makeFieldSelection name
 
-spdxLicenseExpressionToDhall :: Dhall.InputType SPDX.LicenseExpression
+spdxLicenseExpressionToDhall :: Dhall.Encoder SPDX.LicenseExpression
 spdxLicenseExpressionToDhall =
-    Dhall.InputType
+    Dhall.Encoder
     { Dhall.embed =
         let
           go lexp = case lexp of
             SPDX.ELicense ( SPDX.ELicenseId ident ) exceptionMay ->
               Expr.App
                 ( Expr.App
-                    ( Expr.Var "prelude" `Expr.Field` "SPDX" `Expr.Field` "license" )
+                    ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "SPDX" `Expr.Field` Dhall.Core.makeFieldSelection "license" )
                     ( Dhall.embed spdxLicenseIdToDhall ident )
                 )
                 ( Dhall.embed ( maybeToDhall spdxLicenseExceptionIdToDhall ) exceptionMay )
             SPDX.ELicense (SPDX.ELicenseIdPlus ident) exceptionMay ->
               Expr.App
                 ( Expr.App
-                    ( Expr.Var "prelude" `Expr.Field` "SPDX" `Expr.Field` "licenseVersionOrLater" )
+                    ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "SPDX" `Expr.Field` Dhall.Core.makeFieldSelection "licenseVersionOrLater" )
                     ( Dhall.embed spdxLicenseIdToDhall ident )
                 )
                 ( Dhall.embed ( maybeToDhall spdxLicenseExceptionIdToDhall ) exceptionMay )
@@ -697,7 +707,7 @@ spdxLicenseExpressionToDhall =
                 Nothing ->
                   Expr.App
                     ( Expr.App
-                        ( Expr.Var "prelude" `Expr.Field` "SPDX" `Expr.Field` "ref" )
+                        ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "SPDX" `Expr.Field` Dhall.Core.makeFieldSelection "ref" )
                         ( Dhall.embed stringToDhall ( SPDX.licenseRef ref ) )
                     )
                     ( Dhall.embed ( maybeToDhall spdxLicenseExceptionIdToDhall ) exceptionMay )
@@ -705,7 +715,7 @@ spdxLicenseExpressionToDhall =
                   Expr.App
                     ( Expr.App
                         ( Expr.App
-                            ( Expr.Var "prelude" `Expr.Field` "SPDX" `Expr.Field` "refWithFile" )
+                            ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "SPDX" `Expr.Field` Dhall.Core.makeFieldSelection "refWithFile" )
                             ( Dhall.embed stringToDhall ( SPDX.licenseRef ref ) )
                         )
                         ( Dhall.embed stringToDhall file )
@@ -714,29 +724,29 @@ spdxLicenseExpressionToDhall =
             SPDX.EOr a b ->
               Expr.App
                 ( Expr.App
-                    ( Expr.Var "prelude" `Expr.Field` "SPDX" `Expr.Field` "or" )
+                    ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "SPDX" `Expr.Field` Dhall.Core.makeFieldSelection "or" )
                     ( go a )
                 )
                 ( go b )
             SPDX.EAnd a b ->
               Expr.App
                 ( Expr.App
-                    ( Expr.Var "prelude" `Expr.Field` "SPDX" `Expr.Field` "and" )
+                    ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "SPDX" `Expr.Field` Dhall.Core.makeFieldSelection "and" )
                     ( go a )
                 )
                 ( go b )
         in go
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "SPDX"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "SPDX"
     }
 
-spdxLicenseIdToDhall :: Dhall.InputType SPDX.LicenseId
+spdxLicenseIdToDhall :: Dhall.Encoder SPDX.LicenseId
 spdxLicenseIdToDhall =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \ident ->
-        Expr.Var "types" `Expr.Field` "LicenseId" `Expr.Field` identName ident
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LicenseId" `Expr.Field` Dhall.Core.makeFieldSelection ( identName ident )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "LicenseId"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LicenseId"
     }
 
   where
@@ -745,13 +755,13 @@ spdxLicenseIdToDhall =
   identName e =
     StrictText.pack ( show e )
 
-spdxLicenseExceptionIdToDhall :: Dhall.InputType SPDX.LicenseExceptionId
+spdxLicenseExceptionIdToDhall :: Dhall.Encoder SPDX.LicenseExceptionId
 spdxLicenseExceptionIdToDhall =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \ident ->
-        Expr.Var "types" `Expr.Field` "LicenseExceptionId" `Expr.Field` identName ident
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LicenseExceptionId" `Expr.Field` Dhall.Core.makeFieldSelection ( identName ident )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "LicenseExceptionId"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LicenseExceptionId"
     }
 
   where
@@ -761,9 +771,9 @@ spdxLicenseExceptionIdToDhall =
     StrictText.pack ( show e )
 
 
-maybeToDhall :: Dhall.InputType a -> Dhall.InputType ( Maybe a )
+maybeToDhall :: Dhall.Encoder a -> Dhall.Encoder ( Maybe a )
 maybeToDhall t =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
         \a -> case a of
             Nothing -> Expr.App Expr.None (Dhall.declared t)
@@ -772,9 +782,9 @@ maybeToDhall t =
     }
 
 
-listOf :: Dhall.InputType a -> Dhall.InputType [ a ]
+listOf :: Dhall.Encoder a -> Dhall.Encoder [ a ]
 listOf t =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
         \a ->
           Expr.ListLit
@@ -784,7 +794,7 @@ listOf t =
     }
 
 
-compiler :: Dhall.InputType ( Cabal.CompilerFlavor, Cabal.VersionRange )
+compiler :: Dhall.Encoder ( Cabal.CompilerFlavor, Cabal.VersionRange )
 compiler =
   runRecordInputType
     ( mconcat
@@ -794,16 +804,18 @@ compiler =
     )
 
 
-compilerFlavor :: Dhall.InputType Cabal.CompilerFlavor
+compilerFlavor :: Dhall.Encoder Cabal.CompilerFlavor
 compilerFlavor =
   let
     constructor k v =
-      Expr.App ( Expr.Var "types" `Expr.Field` "Compiler" `Expr.Field` k ) v
+      Expr.App ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Compiler"
+                                  `Expr.Field` Dhall.Core.makeFieldSelection k ) v
     nullary k =
-      Expr.Var "types" `Expr.Field` "Compiler" `Expr.Field` k
+      Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Compiler"
+                       `Expr.Field` Dhall.Core.makeFieldSelection k
 
   in
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.Eta ->
           nullary "Eta"
@@ -819,7 +831,7 @@ compilerFlavor =
 
         Cabal.HaskellSuite v ->
           constructor "HaskellSuite"
-          ( Expr.Record ( Map.singleton "_1" ( dhallString v ) ) )
+          ( Expr.Record ( Map.singleton "_1" ( Dhall.Core.makeRecordField ( dhallString v ) ) ) )
 
         Cabal.Helium ->
           nullary "Helium"
@@ -838,7 +850,7 @@ compilerFlavor =
 
         Cabal.OtherCompiler v ->
           constructor "OtherCompiler"
-          ( Expr.Record ( Map.singleton "_1" ( dhallString v ) ) )
+          ( Expr.Record ( Map.singleton "_1" ( Dhall.Core.makeRecordField ( dhallString v ) ) ) )
 
         Cabal.UHC ->
           nullary "UHC"
@@ -846,38 +858,38 @@ compilerFlavor =
         Cabal.YHC ->
           nullary "YHC"
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Compiler"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Compiler"
     }
 
 
-versionRange :: Dhall.InputType Cabal.VersionRange
+versionRange :: Dhall.Encoder Cabal.VersionRange
 versionRange =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
         \versionRange0 ->
           let
             go = Cabal.foldVersionRange
               -- AnyVersion
-              ( Expr.Var "prelude" `Expr.Field` "anyVersion" )
+              ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "anyVersion" )
               -- ThisVersion
               ( \v -> Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "thisVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "thisVersion" )
                   ( Dhall.embed versionToDhall v )
               )
               -- LaterVersion
               ( \v -> Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "laterVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "laterVersion" )
                   ( Dhall.embed versionToDhall v )
               )
               -- EarlierVersion
               ( \v -> Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "earlierVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "earlierVersion" )
                   ( Dhall.embed versionToDhall v )
               )
               -- UnionVersionRanges
               ( \a b -> Expr.App
                   ( Expr.App
-                      ( Expr.Var "prelude" `Expr.Field` "unionVersionRanges" )
+                      ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "unionVersionRanges" )
                       a
                   )
                   b
@@ -885,7 +897,7 @@ versionRange =
               -- IntersectVersionRanges
               ( \a b -> Expr.App
                   ( Expr.App
-                      ( Expr.Var "prelude" `Expr.Field` "intersectVersionRanges" )
+                      ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "intersectVersionRanges" )
                       a
                   )
                   b
@@ -894,11 +906,11 @@ versionRange =
           in
           go ( Cabal.fromVersionIntervals ( Cabal.toVersionIntervals versionRange0 ) )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "VersionRange"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "VersionRange"
     }
 
 
-sourceRepo :: Dhall.InputType Cabal.SourceRepo
+sourceRepo :: Dhall.Encoder Cabal.SourceRepo
 sourceRepo =
   ( runRecordInputTypeWithDefault SourceRepo sourceRepoDefault
       ( mconcat
@@ -913,30 +925,30 @@ sourceRepo =
       )
   )
   { Dhall.declared =
-      Expr.Var "types" `Expr.Field` "SourceRepo"
+      Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "SourceRepo"
   }
 
 
-repoKind :: Dhall.InputType Cabal.RepoKind
+repoKind :: Dhall.Encoder Cabal.RepoKind
 repoKind =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.RepoThis ->
-          Expr.Var "types" `Expr.Field` "RepoKind" `Expr.Field` "RepoThis"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoKind" `Expr.Field` Dhall.Core.makeFieldSelection "RepoThis"
         Cabal.RepoHead ->
-          Expr.Var "types" `Expr.Field` "RepoKind" `Expr.Field` "RepoHead"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoKind" `Expr.Field` Dhall.Core.makeFieldSelection "RepoHead"
         Cabal.RepoKindUnknown str ->
           Expr.App
-            ( Expr.Var "types" `Expr.Field` "RepoKind" `Expr.Field` "RepoKindUnknown" )
-            ( Expr.RecordLit ( Map.singleton "_1" ( dhallString str ) ) )
+            ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoKind" `Expr.Field` Dhall.Core.makeFieldSelection "RepoKindUnknown" )
+            ( Expr.RecordLit ( Map.singleton "_1" ( Dhall.Core.makeRecordField ( dhallString str ) ) ) )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "RepoKind"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoKind"
     }
 
 
-repoType :: Dhall.InputType Cabal.RepoType
+repoType :: Dhall.Encoder Cabal.RepoType
 repoType =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.Darcs ->
           constr "Darcs"
@@ -957,45 +969,46 @@ repoType =
         Cabal.OtherRepoType str ->
           Expr.App
             ( constr "OtherRepoType" )
-            ( Expr.RecordLit ( Map.singleton "_1" ( dhallString str ) ) )
+            ( Expr.RecordLit ( Map.singleton "_1" ( Dhall.Core.makeRecordField ( dhallString str ) ) ) )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "RepoType"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoType"
     }
   where
     constr name =
-      Expr.Var "types" `Expr.Field` "RepoType" `Expr.Field` name
+      Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoType"
+                       `Expr.Field` Dhall.Core.makeFieldSelection name
 
 
-specVersion :: Dhall.InputType ( Either Cabal.Version Cabal.VersionRange )
+specVersion :: Dhall.Encoder ( Either Cabal.Version Cabal.VersionRange )
 specVersion =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = either ( Dhall.embed versionToDhall ) ( error "Only exact cabal-versions are supported" )
     , Dhall.declared = Dhall.declared versionToDhall
     }
 
 
-buildType :: Dhall.InputType Cabal.BuildType
+buildType :: Dhall.Encoder Cabal.BuildType
 buildType =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.Simple ->
-          Expr.Var "types" `Expr.Field` "BuildType" `Expr.Field` "Simple"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "BuildType" `Expr.Field` Dhall.Core.makeFieldSelection "Simple"
 
         Cabal.Configure ->
-          Expr.Var "types" `Expr.Field` "BuildType" `Expr.Field` "Configure"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "BuildType" `Expr.Field` Dhall.Core.makeFieldSelection "Configure"
 
         Cabal.Custom ->
-          Expr.Var "types" `Expr.Field` "BuildType" `Expr.Field` "Custom"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "BuildType" `Expr.Field` Dhall.Core.makeFieldSelection "Custom"
 
         Cabal.Make ->
-          Expr.Var "types" `Expr.Field` "BuildType" `Expr.Field` "Make"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "BuildType" `Expr.Field` Dhall.Core.makeFieldSelection "Make"
 
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "BuildType"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "BuildType"
     }
 
 
-setupBuildInfo :: Dhall.InputType Cabal.SetupBuildInfo
+setupBuildInfo :: Dhall.Encoder Cabal.SetupBuildInfo
 setupBuildInfo =
   ( runRecordInputType
       ( mconcat
@@ -1004,26 +1017,26 @@ setupBuildInfo =
       )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "SetupBuildInfo"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "SetupBuildInfo"
     }
 
 
-libraryName :: Dhall.InputType Cabal.LibraryName
+libraryName :: Dhall.Encoder Cabal.LibraryName
 libraryName =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.LMainLibName ->
-          Expr.Var "types" `Expr.Field` "LibraryName" `Expr.Field` "main-library"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryName" `Expr.Field` Dhall.Core.makeFieldSelection "main-library"
         Cabal.LSubLibName c ->
           Expr.App
-            ( Expr.Var "types" `Expr.Field` "LibraryName" `Expr.Field` "sub-library" )
+            ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryName" `Expr.Field` Dhall.Core.makeFieldSelection "sub-library" )
             ( Dhall.embed unqualComponentName c )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "LibraryName"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryName"
     }
 
 
-dependency :: Dhall.InputType Cabal.Dependency
+dependency :: Dhall.Encoder Cabal.Dependency
 dependency =
   ( runRecordInputType
     ( mconcat
@@ -1034,11 +1047,11 @@ dependency =
     )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Dependency"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Dependency"
     }
 
 
-flag :: Dhall.InputType Cabal.Flag
+flag :: Dhall.Encoder Cabal.Flag
 flag =
   runRecordInputType
     ( mconcat
@@ -1050,12 +1063,12 @@ flag =
     )
 
 
-flagName :: Dhall.InputType Cabal.FlagName
+flagName :: Dhall.Encoder Cabal.FlagName
 flagName =
   contramap Cabal.unFlagName stringToDhall
 
 
-library :: Bool -> Dhall.InputType Cabal.Library
+library :: Bool -> Dhall.Encoder Cabal.Library
 library named =
   ( runRecordInputTypeWithDefault
       ( if named then NamedLibrary else MainLibrary )
@@ -1078,7 +1091,7 @@ library named =
       )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Library"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Library"
     }
 
 
@@ -1107,8 +1120,8 @@ unifyCondTree =
 
 condTree
   :: ( Monoid a )
-  => Dhall.InputType a
-  -> Dhall.InputType ( Cabal.CondTree Cabal.ConfVar x a )
+  => Dhall.Encoder a
+  -> Dhall.Encoder ( Cabal.CondTree Cabal.ConfVar x a )
 condTree t =
   let
     go = \case
@@ -1122,42 +1135,42 @@ condTree t =
           ( go b )
 
     configRecord =
-      Expr.Var "types" `Expr.Field` "Config"
+      Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Config"
 
   in
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
-        Expr.Lam "config" configRecord
+        Expr.Lam Nothing ( Dhall.Core.makeFunctionBinding "config" configRecord )
           . go
           . unifyCondTree
     , Dhall.declared =
-        Expr.Pi "_" configRecord ( Dhall.declared t )
+        Expr.Pi Nothing "_" configRecord ( Dhall.declared t )
     }
 
 
-moduleName :: Dhall.InputType Cabal.ModuleName
+moduleName :: Dhall.Encoder Cabal.ModuleName
 moduleName =
   contramap ( show . Cabal.pretty ) stringToDhall
 
 
-condBranchCondition :: Dhall.InputType (Cabal.Condition Cabal.ConfVar)
+condBranchCondition :: Dhall.Encoder (Cabal.Condition Cabal.ConfVar)
 condBranchCondition =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.declared = Expr.Bool
     , Dhall.embed =
         \a ->
           case a of
             Cabal.Var ( Cabal.OS os0 ) ->
-              Expr.App ( Expr.Field ( Expr.Var "config" ) "os" ) ( Dhall.embed os os0 )
+              Expr.App ( Expr.Field ( Expr.Var "config" ) ( Dhall.Core.makeFieldSelection "os" ) ) ( Dhall.embed os os0 )
 
             Cabal.Var ( Cabal.Arch arch0 ) ->
-              Expr.App ( Expr.Field ( Expr.Var "config" ) "arch" ) ( Dhall.embed arch arch0 )
+              Expr.App ( Expr.Field ( Expr.Var "config" ) ( Dhall.Core.makeFieldSelection "arch" ) ) ( Dhall.embed arch arch0 )
 
             Cabal.Var ( Cabal.Flag flagName0 ) ->
-              Expr.App ( Expr.Field ( Expr.Var "config" ) "flag" ) ( Dhall.embed flagName flagName0 )
+              Expr.App ( Expr.Field ( Expr.Var "config" ) ( Dhall.Core.makeFieldSelection "flag" ) ) ( Dhall.embed flagName flagName0 )
 
             Cabal.Var ( Cabal.Impl c v ) ->
-              Expr.App ( Expr.App ( Expr.Field ( Expr.Var "config" ) "impl" ) ( Dhall.embed compilerFlavor c ) ) ( Dhall.embed versionRange v )
+              Expr.App ( Expr.App ( Expr.Field ( Expr.Var "config" ) ( Dhall.Core.makeFieldSelection "impl" ) ) ( Dhall.embed compilerFlavor c ) ) ( Dhall.embed versionRange v )
 
             Cabal.Lit b ->
               Expr.BoolLit b
@@ -1173,71 +1186,71 @@ condBranchCondition =
     }
 
 
-os :: Dhall.InputType Cabal.OS
+os :: Dhall.Encoder Cabal.OS
 os =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.Linux ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "Linux"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "Linux"
 
         Cabal.Windows ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "Windows"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "Windows"
 
         Cabal.OSX ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "OSX"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "OSX"
 
         Cabal.FreeBSD ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "FreeBSD"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "FreeBSD"
 
         Cabal.OpenBSD ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "OpenBSD"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "OpenBSD"
 
         Cabal.NetBSD ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "NetBSD"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "NetBSD"
 
         Cabal.DragonFly ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "DragonFly"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "DragonFly"
 
         Cabal.Solaris ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "Solaris"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "Solaris"
 
         Cabal.AIX ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "AIX"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "AIX"
 
         Cabal.HPUX ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "HPUX"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "HPUX"
 
         Cabal.IRIX ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "IRIX"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "IRIX"
 
         Cabal.HaLVM ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "HaLVM"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "HaLVM"
 
         Cabal.Hurd ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "Hurd"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "Hurd"
 
         Cabal.IOS ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "IOS"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "IOS"
 
         Cabal.Android ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "Android"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "Android"
 
         Cabal.Ghcjs ->
-          Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "Ghcjs"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "Ghcjs"
 
         Cabal.OtherOS os ->
           Expr.App
-            ( Expr.Var "types" `Expr.Field` "OS" `Expr.Field` "OtherOS" )
-            ( Expr.RecordLit ( Map.singleton "_1" ( dhallString os ) ) )
+            ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS" `Expr.Field` Dhall.Core.makeFieldSelection "OtherOS" )
+            ( Expr.RecordLit ( Map.singleton "_1" ( Dhall.Core.makeRecordField ( dhallString os ) ) ) )
 
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "OS"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "OS"
     }
 
 
-arch :: Dhall.InputType Cabal.Arch
+arch :: Dhall.Encoder Cabal.Arch
 arch =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.I386 ->
           arch "I386"
@@ -1276,13 +1289,14 @@ arch =
         Cabal.OtherArch s ->
           Expr.App
             ( arch "OtherArch" )
-            ( Expr.RecordLit ( Map.singleton "_1" ( dhallString s ) ) )
+            ( Expr.RecordLit ( Map.singleton "_1" ( Dhall.Core.makeRecordField ( dhallString s ) ) ) )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Arch"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Arch"
     }
   where
   arch name =
-    Expr.Var "types" `Expr.Field` "Arch" `Expr.Field` name
+    Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Arch"
+                     `Expr.Field` Dhall.Core.makeFieldSelection name
 
 
 buildInfoRecord :: RecordInputType Cabal.BuildInfo
@@ -1332,7 +1346,7 @@ buildInfoRecord =
     ]
 
 
-moduleReexport :: Dhall.InputType Cabal.ModuleReexport
+moduleReexport :: Dhall.Encoder Cabal.ModuleReexport
 moduleReexport =
   runRecordInputType
     ( mconcat
@@ -1350,7 +1364,7 @@ moduleReexport =
     )
 
 
-legacyExeDependency :: Dhall.InputType Cabal.LegacyExeDependency
+legacyExeDependency :: Dhall.Encoder Cabal.LegacyExeDependency
 legacyExeDependency =
   runRecordInputType
     ( mconcat
@@ -1359,7 +1373,7 @@ legacyExeDependency =
         ]
     )
 
-exeDependency :: Dhall.InputType Cabal.ExeDependency
+exeDependency :: Dhall.Encoder Cabal.ExeDependency
 exeDependency =
   runRecordInputType
     ( mconcat
@@ -1370,12 +1384,12 @@ exeDependency =
     )
 
 
-unqualComponentName :: Dhall.InputType Cabal.UnqualComponentName
+unqualComponentName :: Dhall.Encoder Cabal.UnqualComponentName
 unqualComponentName =
   show . Cabal.pretty >$< stringToDhall
 
 
-pkgconfigDependency :: Dhall.InputType Cabal.PkgconfigDependency
+pkgconfigDependency :: Dhall.Encoder Cabal.PkgconfigDependency
 pkgconfigDependency =
   runRecordInputType
     ( mconcat
@@ -1385,66 +1399,66 @@ pkgconfigDependency =
     )
 
 
-pkgconfigName :: Dhall.InputType Cabal.PkgconfigName
+pkgconfigName :: Dhall.Encoder Cabal.PkgconfigName
 pkgconfigName =
   show . Cabal.pretty >$< stringToDhall
 
 
 -- PkgconfigVersion is restricted to ASCII-only characters.
-pkgconfigVersion :: Dhall.InputType Cabal.PkgconfigVersion
+pkgconfigVersion :: Dhall.Encoder Cabal.PkgconfigVersion
 pkgconfigVersion = (\ ( Cabal.PkgconfigVersion a ) -> StrictText.decodeLatin1 a ) >$< Dhall.inject
 
-pkgconfigVersionRange :: Dhall.InputType Cabal.PkgconfigVersionRange
-pkgconfigVersionRange =  Dhall.InputType
+pkgconfigVersionRange :: Dhall.Encoder Cabal.PkgconfigVersionRange
+pkgconfigVersionRange =  Dhall.Encoder
     { Dhall.embed =
           let
             go = \case
               Cabal.PcAnyVersion ->
-                Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "anyVersion"
+                Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "anyVersion"
               Cabal.PcThisVersion v ->
                 Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "thisVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "thisVersion" )
                   ( Dhall.embed pkgconfigVersion v )
               Cabal.PcLaterVersion v ->
                 Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "laterVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "laterVersion" )
                   ( Dhall.embed pkgconfigVersion v )
               Cabal.PcEarlierVersion v ->
                 Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "earlierVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "earlierVersion" )
                   ( Dhall.embed pkgconfigVersion v )
               Cabal.PcOrLaterVersion v ->
                 Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "orLaterVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "orLaterVersion" )
                   ( Dhall.embed pkgconfigVersion v )
               Cabal.PcOrEarlierVersion v ->
                 Expr.App
-                  ( Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "orEarlierVersion" )
+                  ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "orEarlierVersion" )
                   ( Dhall.embed pkgconfigVersion v )
               Cabal.PcUnionVersionRanges a b ->
                 Expr.App
                   ( Expr.App
-                    ( Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "unionVersionRanges" )
+                    ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "unionVersionRanges" )
                     ( go a )
                   )
                   ( go b )
               Cabal.PcIntersectVersionRanges a b ->
                 Expr.App
                   ( Expr.App
-                    ( Expr.Var "prelude" `Expr.Field` "pkg-config" `Expr.Field` "intersectVersionRanges" )
+                    ( Expr.Var "prelude" `Expr.Field` Dhall.Core.makeFieldSelection "pkg-config" `Expr.Field` Dhall.Core.makeFieldSelection "intersectVersionRanges" )
                     ( go a )
                   )
                   ( go b )
           in
           go
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "PkgconfigVersionRange"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "PkgconfigVersionRange"
     }
 
 
-language :: Dhall.InputType Cabal.Language
+language :: Dhall.Encoder Cabal.Language
 language =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.Haskell2010 ->
           lang "Haskell2010"
@@ -1453,17 +1467,18 @@ language =
         Cabal.UnknownLanguage s ->
           Expr.App
             ( lang "UnknownLanguage" )
-            ( Expr.RecordLit ( Map.singleton "_1" ( dhallString s ) ) )
+            ( Expr.RecordLit ( Map.singleton "_1" ( Dhall.Core.makeRecordField ( dhallString s ) ) ) )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Language"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Language"
     }
   where
     lang name =
-      Expr.Var "types" `Expr.Field` "Language" `Expr.Field` name
+      Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Language"
+                       `Expr.Field` Dhall.Core.makeFieldSelection name
 
-extension :: Dhall.InputType Cabal.Extension
+extension :: Dhall.Encoder Cabal.Extension
 extension =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
         \a ->
           case a of
@@ -1476,7 +1491,7 @@ extension =
             _ ->
               error "Unknown extension"
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Extension"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Extension"
     }
 
   where
@@ -1485,13 +1500,14 @@ extension =
   extName e =
     StrictText.pack ( show e )
 
+  extWith :: Bool -> Cabal.KnownExtension -> Expr.Expr Dhall.Parser.Src a
   extWith trueFalse ext =
     Expr.App
-      ( Expr.Var "types" `Expr.Field` "Extension" `Expr.Field` extName ext )
+      ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Extension" `Expr.Field` Dhall.Core.makeFieldSelection ( extName ext ) )
       ( Expr.BoolLit trueFalse )
 
 
-compilerOptions :: Dhall.InputType ( Cabal.PerCompilerFlavor [ String ] )
+compilerOptions :: Dhall.Encoder ( Cabal.PerCompilerFlavor [ String ] )
 compilerOptions =
   ( runRecordInputTypeWithDefault CompilerOptions compilerOptionsDefault
       ( mconcat
@@ -1501,11 +1517,11 @@ compilerOptions =
       )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "CompilerOptions"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "CompilerOptions"
     }
 
 
-mixin :: Dhall.InputType Cabal.Mixin
+mixin :: Dhall.Encoder Cabal.Mixin
 mixin =
   ( runRecordInputType
       ( mconcat
@@ -1515,12 +1531,12 @@ mixin =
       )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Mixin"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Mixin"
 
     }
 
 
-includeRenaming :: Dhall.InputType Cabal.IncludeRenaming
+includeRenaming :: Dhall.Encoder Cabal.IncludeRenaming
 includeRenaming =
   runRecordInputType
     ( mconcat
@@ -1530,21 +1546,22 @@ includeRenaming =
     )
 
 
-moduleRenaming :: Dhall.InputType Cabal.ModuleRenaming
+moduleRenaming :: Dhall.Encoder Cabal.ModuleRenaming
 moduleRenaming =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed =
         \a ->
           case a of
             Cabal.ModuleRenaming renamed ->
               Expr.App
-                ( Expr.Var "types" `Expr.Field` "ModuleRenaming" `Expr.Field` "renaming" )
+                ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ModuleRenaming" `Expr.Field` Dhall.Core.makeFieldSelection "renaming" )
                 ( Expr.ListLit
                     Nothing
                     ( fmap
                         (\ ( src, dst ) ->
                            Expr.RecordLit
-                             ( Map.fromList
+                             ( Dhall.Core.makeRecordField
+                               <$> Map.fromList
                                  [ ( "rename", Dhall.embed moduleName src )
                                  , ( "to", Dhall.embed moduleName dst )
                                  ]
@@ -1554,20 +1571,20 @@ moduleRenaming =
                     )
                 )
             Cabal.DefaultRenaming ->
-              Expr.Var "types" `Expr.Field` "ModuleRenaming" `Expr.Field` "default"
+              Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ModuleRenaming" `Expr.Field` Dhall.Core.makeFieldSelection "default"
             Cabal.HidingRenaming hidden ->
               Expr.App
-                ( Expr.Var "types" `Expr.Field` "ModuleRenaming" `Expr.Field` "hiding" )
+                ( Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ModuleRenaming" `Expr.Field` Dhall.Core.makeFieldSelection "hiding" )
                 ( Expr.ListLit
                     Nothing
                     ( Dhall.embed moduleName <$> Seq.fromList hidden )
                 )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "ModuleRenaming"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ModuleRenaming"
     }
 
 
-benchmark :: Dhall.InputType Cabal.Benchmark
+benchmark :: Dhall.Encoder Cabal.Benchmark
 benchmark =
   (  runRecordInputTypeWithDefault Benchmark benchmarkDefault
        ( mconcat
@@ -1582,11 +1599,11 @@ benchmark =
        )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Benchmark"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Benchmark"
     }
 
 
-testSuite :: Dhall.InputType Cabal.TestSuite
+testSuite :: Dhall.Encoder Cabal.TestSuite
 testSuite =
   ( runRecordInputTypeWithDefault TestSuite testSuiteDefault
       ( mconcat
@@ -1596,13 +1613,13 @@ testSuite =
       )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "TestSuite"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "TestSuite"
     }
 
 
-testSuiteInterface :: Dhall.InputType Cabal.TestSuiteInterface
+testSuiteInterface :: Dhall.Encoder Cabal.TestSuiteInterface
 testSuiteInterface =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.TestSuiteExeV10 _ main ->
           Expr.App
@@ -1619,14 +1636,15 @@ testSuiteInterface =
               m
             )
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "TestType"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "TestType"
     }
   where
   interface name =
-    Expr.Var "types" `Expr.Field` "TestType" `Expr.Field` name
+    Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "TestType"
+                     `Expr.Field` Dhall.Core.makeFieldSelection name
 
 
-executable :: Dhall.InputType Cabal.Executable
+executable :: Dhall.Encoder Cabal.Executable
 executable =
   ( runRecordInputTypeWithDefault Executable executableDefault
       ( mconcat
@@ -1637,24 +1655,24 @@ executable =
       )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Executable"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Executable"
     }
 
 
-executableScope :: Dhall.InputType Cabal.ExecutableScope
+executableScope :: Dhall.Encoder Cabal.ExecutableScope
 executableScope =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.ExecutablePublic ->
-            Expr.Var "types" `Expr.Field` "Scope" `Expr.Field` "Public"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Scope" `Expr.Field` Dhall.Core.makeFieldSelection "Public"
         Cabal.ExecutablePrivate ->
-            Expr.Var "types" `Expr.Field` "Scope" `Expr.Field` "Private"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Scope" `Expr.Field` Dhall.Core.makeFieldSelection "Private"
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "Scope"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Scope"
     }
 
 
-foreignLibrary :: Dhall.InputType Cabal.ForeignLib
+foreignLibrary :: Dhall.Encoder Cabal.ForeignLib
 foreignLibrary =
   ( runRecordInputType
       ( mconcat
@@ -1668,11 +1686,11 @@ foreignLibrary =
       )
   )
     { Dhall.declared =
-        Expr.Var "types" `Expr.Field` "ForeignLibrary"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ForeignLibrary"
     }
 
 
-versionInfo :: Dhall.InputType Cabal.LibVersionInfo
+versionInfo :: Dhall.Encoder Cabal.LibVersionInfo
 versionInfo =
   Cabal.libVersionInfoCRA >$<
   runRecordInputType
@@ -1684,28 +1702,30 @@ versionInfo =
     )
 
 
-foreignLibOption :: Dhall.InputType Cabal.ForeignLibOption
+foreignLibOption :: Dhall.Encoder Cabal.ForeignLibOption
 foreignLibOption =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.ForeignLibStandalone ->
-          Expr.Var "types" `Expr.Field` "ForeignLibOption" `Expr.Field` "Standalone"
+          Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ForeignLibOption" `Expr.Field` Dhall.Core.makeFieldSelection "Standalone"
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "ForeignLibOption"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ForeignLibOption"
     }
 
 
-foreignLibType :: Dhall.InputType Cabal.ForeignLibType
+foreignLibType :: Dhall.Encoder Cabal.ForeignLibType
 foreignLibType =
-  Dhall.InputType
+  Dhall.Encoder
     { Dhall.embed = \case
         Cabal.ForeignLibNativeShared ->
           ty "Shared"
         Cabal.ForeignLibNativeStatic ->
           ty "Static"
     , Dhall.declared =
-        Expr.Var "types" `Expr.Field` "ForeignLibType"
+        Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "ForeignLibType"
     }
   where
-  ty name =
-    Expr.Var "types" `Expr.Field` "ForeignLibType" `Expr.Field` name
+    ty name =
+      Expr.Var "types"
+        `Expr.Field` Dhall.Core.makeFieldSelection "ForeignLibType"
+        `Expr.Field` Dhall.Core.makeFieldSelection name

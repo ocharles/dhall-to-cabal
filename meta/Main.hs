@@ -182,13 +182,13 @@ meta (MetaOptions {..}) = do
             Expr.Embed
               ( importFile ( relativeTo localDest ( defaultFile typ ) ) )
           PreludeConstructorsLicense ->
-            Expr.Var "types" `Expr.Field` "License"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "License"
           PreludeConstructorsRepoKind ->
-            Expr.Var "types" `Expr.Field` "RepoKind"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "RepoKind"
           PreludeConstructorsScope ->
-            Expr.Var "types" `Expr.Field` "Scope"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "Scope"
           PreludeConstructorsLibraryVisibility ->
-            Expr.Var "types" `Expr.Field` "LibraryVisibility"
+            Expr.Var "types" `Expr.Field` Dhall.Core.makeFieldSelection "LibraryVisibility"
           PreludeV ->
             Expr.Embed
               ( importFile ( relativeTo localDest "./Version/v.dhall" ) )

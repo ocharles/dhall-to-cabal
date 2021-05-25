@@ -1,14 +1,15 @@
 {-# language DeriveFunctor #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language FlexibleContexts #-}
 
 module DhallToCabal.ConfigTree ( ConfigTree(..), toConfigTree ) where
 
 import Control.Monad
 import Data.Semigroup ( Semigroup ( (<>) ) )
+import Data.String ( IsString )
 import Dhall.Core hiding ( Const )
 import Dhall.Optics ( transformMOf )
-
 
 -- | 'ConfigTree' captures a logic-monad like expansion of the result of
 -- Bool-valued expressions.
@@ -33,7 +34,7 @@ instance ( Semigroup a ) => Semigroup ( ConfigTree cond a ) where
 
 instance ( Monoid a ) => Monoid ( ConfigTree cond a ) where
   mempty = pure mempty
-  mappend = liftM2 mappend
+  mappend = (<>)
 
 
 -- | Given a Dhall expression that is of the form @λ( config : Config ) -> a@,
@@ -67,7 +68,7 @@ toConfigTree e =
 -- | Find all config-like uses of a given variable, and expand them into all
 -- possible results of evaluation.
 
-rewriteConfigUse :: Var -> Expr s a -> ConfigTree (Expr s a) (Expr s a)
+rewriteConfigUse :: Var -> Expr s a -> ConfigTree ( Expr s a ) ( Expr s a )
 rewriteConfigUse v =
  transformMOf
    subExpressions
@@ -83,8 +84,8 @@ rewriteConfigUse v =
 
   where
 
-    isConfigUse (App (Field (Var x') "os") _)           | v == x' = True
-    isConfigUse (App (Field (Var x') "arch") _)         | v == x' = True
-    isConfigUse (App (App (Field (Var x') "impl") _) _) | v == x' = True
-    isConfigUse (App (Field (Var x') "flag") _)         | v == x' = True
+    isConfigUse (App (Field (Var x') (FieldSelection _ "os" _)) _)           | v == x' = True
+    isConfigUse (App (Field (Var x') (FieldSelection _ "arch" _)) _)         | v == x' = True
+    isConfigUse (App (App (Field (Var x') (FieldSelection _ "impl" _)) _) _) | v == x' = True
+    isConfigUse (App (Field (Var x') (FieldSelection _ "flag" _)) _)         | v == x' = True
     isConfigUse _ = False
